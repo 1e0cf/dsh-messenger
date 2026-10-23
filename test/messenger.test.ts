@@ -8,6 +8,7 @@ class MemoryHost implements Host {
   steers: { id: string; message: MessengerMessage }[];
   failBeforeSteer: boolean;
   errors: string[];
+  reads = 0;
 
   constructor() {
     this.logs = new Map(
@@ -25,7 +26,6 @@ class MemoryHost implements Host {
     this.steers = [];
     this.failBeforeSteer = false;
     this.errors = [];
-    this.reads = 0;
   }
   async catalog() {
     return Promise.all([...this.logs.keys()].map((id) => this.peer(id)));
