@@ -291,6 +291,11 @@ export class DshHost implements Host {
     }
   }
 
+  /** Peer view of a log the caller already holds: no extra storage round-trip. */
+  peerOf(log: SessionLog): Peer {
+    return this.describe(log.header, this.recordedPreset(log), this.metaOf(log));
+  }
+
   async peer(id: string): Promise<Peer> {
     const log = await this.read(id);
     return this.describe(log.header, this.recordedPreset(log), this.metaOf(log));

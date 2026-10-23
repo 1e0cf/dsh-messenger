@@ -309,10 +309,17 @@ export class Messenger<H extends Host = Host> {
   }
 
   async deliver(message: MessengerMessage, channel: ChannelDefinition, id: string): Promise<void> {
-    await this.requirePair(message.senderSessionId, id);
+    // One read of the recipient carries everything this step needs: policy view,
+    // membership, the message record and the acceptance check.
     let target = await this.host.read(id);
     if (nativeAccepted(target, message.messageId)) return;
-    await this.join(id, channel);
+    const from = await this.host.peer(message.senderSessionId);
+    const to = this.host.peerOf ? this.host.peerOf(target) : await this.host.peer(id);
+    if (!this.allowed(from, to)) throw new Error('Messenger policy denies this sender/recipient pair');
+    if (!this.joined(target, channel.channelId)) {
+      await this.host.append(id, 'messenger/channel_joined', channel);
+      target = await this.host.read(id);
+    }
     if (
       !target.events.some(
         (event) =>
@@ -337,6 +344,15 @@ export class Messenger<H extends Host = Host> {
         deliveredAt: new Date().toISOString(),
       },
       'bookkeeping',
+    );
+  }
+
+  /** Whether this log already holds the channel definition. */
+  private joined(log: SessionLog, channelId: string): boolean {
+    return log.events.some(
+      (event) =>
+        (event.type === 'messenger/channel_created' || event.type === 'messenger/channel_joined') &&
+        (event.data as { channelId?: string }).channelId === channelId,
     );
   }
 

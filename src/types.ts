@@ -141,6 +141,8 @@ export interface NewChannelArgs {
 export interface Host {
   catalog(): Promise<Peer[]>;
   peer(id: string): Promise<Peer>;
+  /** Optional fast path: describe a log the caller already holds. */
+  peerOf?(log: SessionLog): Peer;
   read(id: string): Promise<SessionLog>;
   append(id: string, type: string, data: unknown, kind?: 'payload' | 'bookkeeping'): Promise<unknown>;
   /** Set by Messenger: receives every projected session event for incremental state. */
