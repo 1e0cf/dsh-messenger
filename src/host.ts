@@ -17,6 +17,9 @@ const PLUGIN_PREFIX = 'plugin:';
 const LEGACY_PREFIX = 'messenger/';
 const PLUGIN_LEGACY_PREFIX = `${PLUGIN_PREFIX}${LEGACY_PREFIX}`;
 const CATALOG_READ_CONCURRENCY = 8;
+// Discovery is a browsing aid, not a consistency boundary: a few seconds of staleness
+// is invisible to an agent, a full corpus scan on every tool call is not.
+const CATALOG_TTL_MS = 5_000;
 
 interface CachedLog {
   header: SessionHeader;
@@ -74,6 +77,8 @@ export class DshHost implements Host {
   catalogCache: CatalogCache;
   catalogReady: Promise<unknown>;
   catalogPending?: Promise<Peer[]>;
+  private catalogValue?: Peer[];
+  private catalogBuiltAt = 0;
   private readonly readQueue = new Map<string, Promise<void>>();
   /** Receives every projected session event; used for incremental channel state. */
   eventSink?: (sessionId: string, event: SessionEvent) => void;
@@ -96,6 +101,7 @@ export class DshHost implements Host {
       // Publishers get every event as it lands, so channel state is maintained
       // incrementally instead of being rebuilt from every stored log.
       if (projected) this.eventSink?.(session.id, projected);
+      if (event.type === 'session/title' || event.type === 'agent-preset/selected') this.invalidateCatalog();
       const cached = this.cache.get(session.id);
       if (!cached) return;
       if (event.seq !== cached.count) {
@@ -244,10 +250,23 @@ export class DshHost implements Host {
   async catalog(): Promise<Peer[]> {
     // Discovery, channel listing and restore ask for the catalog concurrently;
     // one build serves them all instead of parsing the same logs twice.
-    this.catalogPending ??= this.buildCatalog().finally(() => {
-      this.catalogPending = undefined;
-    });
+    if (this.catalogValue && Date.now() - this.catalogBuiltAt < CATALOG_TTL_MS) return this.catalogValue;
+    this.catalogPending ??= this.buildCatalog()
+      .then((peers) => {
+        this.catalogValue = peers;
+        this.catalogBuiltAt = Date.now();
+        return peers;
+      })
+      .finally(() => {
+        this.catalogPending = undefined;
+      });
     return this.catalogPending;
+  }
+
+  /** Drop the catalog: a new session or a renamed one changes what discovery returns. */
+  invalidateCatalog(): void {
+    this.catalogValue = undefined;
+    this.catalogBuiltAt = 0;
   }
 
   async buildCatalog(): Promise<Peer[]> {
@@ -336,6 +355,7 @@ export class DshHost implements Host {
         setup: (agentCtx) => this.mount(agentCtx, preset),
       });
       this.owned.set(id, handle);
+      this.invalidateCatalog();
       return handle.agent;
     })();
     this.loading.set(id, task);
@@ -360,6 +380,7 @@ export class DshHost implements Host {
       setup: (agentCtx) => this.mount(agentCtx, preset),
     });
     this.owned.set(id, handle);
+    this.invalidateCatalog();
     if (title !== undefined) {
       titles!.rename(handle.agent.session, title);
       if (!(await this.ctx.sessions.flush(handle.agent.session)))

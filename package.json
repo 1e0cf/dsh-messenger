@@ -7,14 +7,11 @@
   "exports": {
     ".": {
       "default": "./lib/index.js"
-    },
-    "./core": {
-      "default": "./lib/messenger.js"
     }
   },
   "license": "MIT",
   "scripts": {
-    "build": "bun build src/index.ts src/messenger.ts --outdir lib --target node --format esm --packages external",
+    "build": "bun build src/index.ts --outdir lib --target node --format esm --packages external",
     "test": "bun test",
     "typecheck": "bun check --no-script",
     "format": "bun fmt .",
