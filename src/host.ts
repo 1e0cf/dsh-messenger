@@ -74,6 +74,7 @@ export class DshHost implements Host {
   catalogCache: CatalogCache;
   catalogReady: Promise<unknown>;
   catalogPending?: Promise<Peer[]>;
+  private readonly readQueue = new Map<string, Promise<void>>();
 
   constructor(ctx: Context, config: MessengerConfig) {
     const probe = Session.create(SessionId(`messenger-patch-probe-${randomUUID()}`));
@@ -391,26 +392,62 @@ export class DshHost implements Host {
     await this.ctx.sessions.flush(agent.session);
   }
 
+  /**
+   * Queue the read receipts for one model request without blocking the response.
+   *
+   * The receipt is bookkeeping: the answer must not wait for a log append, and a
+   * failure must not break the stream. Per-session chaining keeps appends ordered.
+   */
+  scheduleMarkRead(request: GenerateOptions): void {
+    const sessionId = request.sessionId;
+    if (!sessionId) return;
+    const receipts = request.messages
+      .filter((message) => message.source?.kind === 'dsh-messenger')
+      .map((message) => {
+        const source = message.source as MessengerMessageSource;
+        return { messageId: source.messageId, channelId: source.channelId };
+      });
+    if (!receipts.length) return;
+    const previous = this.readQueue.get(sessionId) ?? Promise.resolve();
+    const task = previous
+      .then(() => this.markReadMessages(sessionId, receipts))
+      .catch((error) => this.report(error));
+    this.readQueue.set(sessionId, task);
+    void task.finally(() => {
+      if (this.readQueue.get(sessionId) === task) this.readQueue.delete(sessionId);
+    });
+  }
+
+  /** Awaited receipt write, kept for hosts and tests that want the barrier. */
   async markRead(request: GenerateOptions): Promise<void> {
     if (!request.sessionId) return;
-    const inputs: UserMessage[] = request.messages.filter((message) => message.source?.kind === 'dsh-messenger');
-    if (!inputs.length) return;
-    const log = await this.read(request.sessionId);
-    for (const message of inputs) {
-      const source = message.source as MessengerMessageSource;
-      if (
-        log.events.some(
-          (event) =>
-            event.type === 'messenger/message_read' &&
-            (event.data as { messageId?: string }).messageId === source.messageId,
-        )
-      )
-        continue;
-      await this.append(request.sessionId, 'messenger/message_read', {
+    const receipts = request.messages
+      .filter((message) => message.source?.kind === 'dsh-messenger')
+      .map((message) => {
+        const source = message.source as MessengerMessageSource;
+        return { messageId: source.messageId, channelId: source.channelId };
+      });
+    if (!receipts.length) return;
+    await this.markReadMessages(request.sessionId, receipts);
+  }
+
+  private async markReadMessages(
+    sessionId: string,
+    receipts: { messageId: string; channelId: string }[],
+  ): Promise<void> {
+    const log = await this.read(sessionId);
+    const known = new Set(
+      log.events
+        .filter((event) => event.type === 'messenger/message_read')
+        .map((event) => (event.data as { messageId?: string }).messageId),
+    );
+    for (const receipt of receipts) {
+      if (known.has(receipt.messageId)) continue;
+      await this.append(sessionId, 'messenger/message_read', {
         version: 1,
-        channelId: source.channelId,
-        messageId: source.messageId,
-        recipientSessionId: request.sessionId,
+        channelId: receipt.channelId,
+        messageId: receipt.messageId,
+        recipientSessionId: sessionId,
         readAt: new Date().toISOString(),
       });
     }

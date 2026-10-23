@@ -68,11 +68,7 @@ export async function start(ctx: Context, config: MessengerConfig): Promise<Mess
       // Merely claiming the inbox does not mark a message as read.
       if (!marked) {
         marked = true;
-        try {
-          await host.markRead(request);
-        } catch (error) {
-          host.report(error);
-        }
+        host.scheduleMarkRead(request);
       }
       yield chunk;
     }
