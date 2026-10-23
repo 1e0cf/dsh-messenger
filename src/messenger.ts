@@ -46,6 +46,10 @@ export class Messenger<H extends Host = Host> {
   draining?: Promise<void>;
   redrain?: boolean;
   disposed: boolean;
+  /** Channels with work the last sweep has not confirmed: everything else is skipped. */
+  dirty: Set<string>;
+  /** Message ids already seen per channel: delivery copies are not new work. */
+  known: Map<string, Set<string>>;
 
   constructor(host: H, config: MessengerConfig) {
     this.host = host;
@@ -57,6 +61,8 @@ export class Messenger<H extends Host = Host> {
     this.delivery = Promise.resolve();
     this.draining = undefined;
     this.disposed = false;
+    this.dirty = new Set<string>();
+    this.known = new Map<string, Set<string>>();
     // Channel membership is written by the participants themselves, so every
     // definition arrives as an ordinary session event: no rebuild on agent creation.
     host.eventSink = (sessionId, event) => this.observeChannelEvent(sessionId, event);
@@ -64,6 +70,16 @@ export class Messenger<H extends Host = Host> {
 
   /** Fold one channel definition event into the in-memory channel map. */
   private observeChannelEvent(sessionId: string, event: SessionLog['events'][number]): void {
+    if (event.type === 'messenger/message') {
+      const data = event.data as { channelId?: string; messageId?: string };
+      if (!data.channelId) return;
+      const seen = this.known.get(data.channelId) ?? new Set<string>();
+      this.known.set(data.channelId, seen);
+      if (data.messageId && seen.has(data.messageId)) return;
+      if (data.messageId) seen.add(data.messageId);
+      this.dirty.add(data.channelId);
+      return;
+    }
     if (event.type !== 'messenger/channel_created' && event.type !== 'messenger/channel_joined') return;
     const data = event.data as ChannelDefinition | undefined;
     if (!data || typeof data.channelId !== 'string') return;
@@ -72,6 +88,7 @@ export class Messenger<H extends Host = Host> {
     const existing = this.channels.get(data.channelId);
     if (existing && JSON.stringify(existing) !== JSON.stringify(data)) return;
     this.channels.set(data.channelId, structuredClone(data));
+    this.dirty.add(data.channelId);
   }
 
   lock<T>(task: () => Promise<T>): Promise<T> {
@@ -94,6 +111,7 @@ export class Messenger<H extends Host = Host> {
         }
       }
       this.channels = definitions(logs);
+      this.dirty = new Set(this.channels.keys());
     });
   }
 
@@ -126,6 +144,7 @@ export class Messenger<H extends Host = Host> {
         createdAt: new Date().toISOString(),
       };
       await this.host.append(callerId, 'messenger/channel_created', channel);
+      this.dirty.add(channel.channelId);
       // Publication follows the initiator's durable record. A missing joined copy
       // can be repaired from this definition after a crash.
       this.channels.set(channel.channelId, channel);
@@ -146,6 +165,13 @@ export class Messenger<H extends Host = Host> {
         (event.data as { channelId?: string }).channelId === channel.channelId,
     );
     if (!exists) await this.host.append(sessionId, 'messenger/channel_joined', channel);
+  }
+
+  /** Record a message id we wrote ourselves so its delivery copy is not new work. */
+  private rememberMessage(channelId: string, messageId: string): void {
+    const seen = this.known.get(channelId) ?? new Set<string>();
+    seen.add(messageId);
+    this.known.set(channelId, seen);
   }
 
   async send(callerId: string, channelId: string, text: string, messageId: string = randomUUID()): Promise<SendResult> {
@@ -177,6 +203,8 @@ export class Messenger<H extends Host = Host> {
           text,
           sentAt: new Date().toISOString(),
         });
+        this.rememberMessage(channelId, messageId);
+        this.dirty.add(channelId);
       }
       return { channelId, messageId, status: 'queued' as const };
     });
@@ -233,7 +261,14 @@ export class Messenger<H extends Host = Host> {
   }
 
   async drain(): Promise<void> {
-    for (const channel of this.channels.values()) {
+    // Only channels with an unseen message event need a sweep. Any other channel has
+    // nothing new since its last confirmed delivery, so reading its logs is waste.
+    const pending = [...this.dirty];
+    this.dirty.clear();
+    for (const channelId of pending) {
+      const channel = this.channels.get(channelId);
+      if (!channel) continue;
+      let complete = true;
       let logs: SessionLog[];
       try {
         logs = await Promise.all(
@@ -241,6 +276,7 @@ export class Messenger<H extends Host = Host> {
         );
       } catch (error) {
         this.host.report(error);
+        this.dirty.add(channelId);
         continue;
       }
       for (const message of history(channel, logs)) {
@@ -250,6 +286,7 @@ export class Messenger<H extends Host = Host> {
             await withTimeout(this.deliver(message, channel, id), DELIVERY_STEP_TIMEOUT_MS, `delivering to ${id}`);
             this.errors.delete(key);
           } catch (error) {
+            complete = false;
             this.errors.set(key, String(error));
             this.host.report(error);
             // A dropped delivery must stay diagnosable: the in-memory error map
@@ -267,6 +304,7 @@ export class Messenger<H extends Host = Host> {
           }
         }
       }
+      if (!complete) this.dirty.add(channelId);
     }
   }
 
@@ -288,13 +326,18 @@ export class Messenger<H extends Host = Host> {
     await this.host.steer(id, message);
     target = await this.host.read(id);
     if (!nativeAccepted(target, message.messageId)) throw new Error('Native inbox did not accept the message');
-    await this.host.append(id, 'messenger/message_delivered', {
-      version: 1,
-      channelId: channel.channelId,
-      messageId: message.messageId,
-      recipientSessionId: id,
-      deliveredAt: new Date().toISOString(),
-    }, 'bookkeeping');
+    await this.host.append(
+      id,
+      'messenger/message_delivered',
+      {
+        version: 1,
+        channelId: channel.channelId,
+        messageId: message.messageId,
+        recipientSessionId: id,
+        deliveredAt: new Date().toISOString(),
+      },
+      'bookkeeping',
+    );
   }
 
   async read(callerId: string, channelId: string, query = ''): Promise<ReadMessage[]> {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import type { GenerateOptions, MessengerMessageSource, UserMessage } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, MessengerMessageSource } from '@deepseek-ai/dsh-llm';
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent';
 import { appendPluginRecord, pluginRecordOf, Session, SessionId } from '@deepseek-ai/dsh-session';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
@@ -423,9 +423,7 @@ export class DshHost implements Host {
       });
     if (!receipts.length) return;
     const previous = this.readQueue.get(sessionId) ?? Promise.resolve();
-    const task = previous
-      .then(() => this.markReadMessages(sessionId, receipts))
-      .catch((error) => this.report(error));
+    const task = previous.then(() => this.markReadMessages(sessionId, receipts)).catch((error) => this.report(error));
     this.readQueue.set(sessionId, task);
     void task.finally(() => {
       if (this.readQueue.get(sessionId) === task) this.readQueue.delete(sessionId);
@@ -457,13 +455,18 @@ export class DshHost implements Host {
     );
     for (const receipt of receipts) {
       if (known.has(receipt.messageId)) continue;
-      await this.append(sessionId, 'messenger/message_read', {
-        version: 1,
-        channelId: receipt.channelId,
-        messageId: receipt.messageId,
-        recipientSessionId: sessionId,
-        readAt: new Date().toISOString(),
-      }, 'bookkeeping');
+      await this.append(
+        sessionId,
+        'messenger/message_read',
+        {
+          version: 1,
+          channelId: receipt.channelId,
+          messageId: receipt.messageId,
+          recipientSessionId: sessionId,
+          readAt: new Date().toISOString(),
+        },
+        'bookkeeping',
+      );
     }
   }
 

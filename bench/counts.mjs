@@ -73,6 +73,13 @@ function makeWorld({ coldSessions = 115, withChannels = 40, liveFiller = 1200, m
         ? buildSession(id, { channelId: `cold-channel-${i}`, partner: `${id}-peer`, filler: 200 })
         : buildSession(id, { filler: 50 }),
     );
+    // The peer of a stored channel is a real session too; without it every sweep of
+    // that channel would fail to read a participant and stay dirty forever.
+    if (i < withChannels)
+      sessions.set(
+        `${id}-peer`,
+        buildSession(`${id}-peer`, { channelId: `cold-channel-${i}`, partner: id, createdBySelf: false }),
+      );
   }
 
   const agents = new Map();
@@ -114,7 +121,7 @@ function makeWorld({ coldSessions = 115, withChannels = 40, liveFiller = 1200, m
       },
       list: async () => {
         counts.list += 1;
-        return [...sessions].map(([id, session]) => ({
+        return [...sessions].map(([, session]) => ({
           header: session.header,
           sizeBytes: session.snapshotEvents().length,
         }));
@@ -225,6 +232,11 @@ await withWorld({}, async ({ host, messenger, counts }) => {
 // 4. Send one message into a two-member channel, then drain the delivery sweep.
 await withWorld({ messages: 1 }, async ({ host, messenger, counts }) => {
   await messenger.restore();
+  // The first sweep after a cold start is inherent; measure a steady-state send.
+  messenger.kick();
+  await messenger.settle();
+  if (process.env.BENCH_DEBUG)
+    console.error('after settle: dirty', messenger.dirty.size, 'channels', messenger.channels.size);
   reset(counts);
   const started = Date.now();
   await messenger.send(A, CHANNEL, 'hello');
@@ -232,7 +244,6 @@ await withWorld({ messages: 1 }, async ({ host, messenger, counts }) => {
   record('send+drain', counts, Date.now() - started);
   await host.close();
 });
-
 
 // 5. Five agent creations: the old wiring rebuilt every channel each time.
 await withWorld({}, async ({ host, messenger, counts }) => {
