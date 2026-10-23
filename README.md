@@ -174,8 +174,18 @@ There are no rate limits, automatic loop prevention, or implicit routing.
 ```sh
 bun install
 bun run gate                 # fmt check, lint, type check, tests
-bun run build                # lib/index.js and lib/messenger.js
+bun run build                # lib/index.js (single entry)
 bun scripts/restart-smoke.ts # needs the patched runtime
+```
+
+`bench/counts.mjs` counts the storage round-trips each operation costs, which is the
+metric that matters here: a `stat` is a scan of the whole sessions corpus and an `open`
+decompresses a whole log. It needs a real DSH runtime on disk, so run it where the
+plugin is deployed:
+
+```sh
+BENCH_SRC=$PWD/src node bench/counts.mjs      # JavaScript checkout
+BENCH_SRC=$PWD/src BENCH_TS=1 bun bench/counts.mjs  # TypeScript checkout
 ```
 
 The smoke test needs the complete patched DSH runtime. It uses real Cordis,
