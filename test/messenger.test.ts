@@ -25,6 +25,7 @@ class MemoryHost implements Host {
     this.steers = [];
     this.failBeforeSteer = false;
     this.errors = [];
+    this.reads = 0;
   }
   async catalog() {
     return Promise.all([...this.logs.keys()].map((id) => this.peer(id)));
@@ -35,6 +36,7 @@ class MemoryHost implements Host {
     return { id, preset: log.header.agentPreset, status: 'idle' };
   }
   async read(id: string): Promise<SessionLog> {
+    this.reads += 1;
     return structuredClone(this.logs.get(id)!);
   }
   async append(id: string, type: string, data: unknown): Promise<void> {
@@ -194,4 +196,20 @@ test('sends to different channels do not queue behind each other', async () => {
   release();
   await firstSend;
   assert.ok(host.logs.get('a')!.events.some((event) => (event.data as { text?: string }).text === 'fast'));
+});
+
+test('a channel whose delivery failed backs off instead of sweeping again immediately', async () => {
+  const host = new MemoryHost();
+  const messenger = new Messenger(host, config);
+  const channel = await messenger.create('a', 'b');
+  host.failBeforeSteer = true;
+  await messenger.send('a', channel.channelId, 'boom');
+  await messenger.settle();
+  host.failBeforeSteer = false;
+  const readsBefore = host.reads;
+  messenger.kick();
+  await messenger.settle();
+  // Backoff means the next kick does not touch the broken channel's logs at all.
+  assert.equal(host.reads, readsBefore);
+  assert.ok(host.errors.length > 0);
 });

@@ -50,6 +50,8 @@ export class Messenger<H extends Host = Host> {
   dirty: Set<string>;
   /** Message ids already seen per channel: delivery copies are not new work. */
   known: Map<string, Set<string>>;
+  /** Per-channel backoff after a failed sweep: a broken peer must not spin the host. */
+  retry: Map<string, { attempts: number; at: number }>;
 
   constructor(host: H, config: MessengerConfig) {
     this.host = host;
@@ -63,6 +65,7 @@ export class Messenger<H extends Host = Host> {
     this.disposed = false;
     this.dirty = new Set<string>();
     this.known = new Map<string, Set<string>>();
+    this.retry = new Map<string, { attempts: number; at: number }>();
     // Channel membership is written by the participants themselves, so every
     // definition arrives as an ordinary session event: no rebuild on agent creation.
     host.eventSink = (sessionId, event) => this.observeChannelEvent(sessionId, event);
@@ -277,6 +280,12 @@ export class Messenger<H extends Host = Host> {
     for (const channelId of pending) {
       const channel = this.channels.get(channelId);
       if (!channel) continue;
+      const backoff = this.retry.get(channelId);
+      if (backoff && backoff.at > Date.now()) {
+        // Retry later, but keep the channel marked so the work is not lost.
+        this.dirty.add(channelId);
+        continue;
+      }
       let complete = true;
       let logs: SessionLog[];
       try {
@@ -285,6 +294,8 @@ export class Messenger<H extends Host = Host> {
         );
       } catch (error) {
         this.host.report(error);
+        const attempts = (this.retry.get(channelId)?.attempts ?? 0) + 1;
+        this.retry.set(channelId, { attempts, at: Date.now() + Math.min(60_000, 1_000 * 2 ** attempts) });
         this.dirty.add(channelId);
         continue;
       }
@@ -313,7 +324,12 @@ export class Messenger<H extends Host = Host> {
           }
         }
       }
-      if (!complete) this.dirty.add(channelId);
+      if (complete) this.retry.delete(channelId);
+      else {
+        const attempts = (this.retry.get(channelId)?.attempts ?? 0) + 1;
+        this.retry.set(channelId, { attempts, at: Date.now() + Math.min(60_000, 1_000 * 2 ** attempts) });
+        this.dirty.add(channelId);
+      }
     }
   }
 
