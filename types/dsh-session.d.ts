@@ -30,7 +30,7 @@ declare module '@deepseek-ai/dsh-session' {
     readonly id: SessionId;
     readonly header: SessionHeader;
     readonly seq: number;
-    snapshotEvents(): readonly SessionEvent[];
+    snapshotEvents(fromSeq?: SessionSeq, toSeqExclusive?: SessionSeq): readonly SessionEvent[];
   }
 
   export declare function appendPluginRecord(session: Session, type: string, data: unknown): SessionSeq;

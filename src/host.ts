@@ -133,26 +133,58 @@ export class DshHost implements Host {
   async read(id: string): Promise<SessionLog> {
     const sessionId = SessionId(id);
     const live = this.ctx.sessions.get(sessionId);
-    if (live) {
-      const flushed = await this.ctx.sessions.flush(live);
-      if (!flushed) throw new Error(`Session ${id} has no persistence writer`);
-    }
+    // A live session is the freshest possible source and the only one that needs no
+    // disk: its newest events exist in memory until the persistence writer drains them.
+    // Reading storage here forced a durability barrier (flush) plus a corpus-wide stat
+    // on every messenger call, so the live path never touches storage at all.
+    if (live) return this.readLive(id, live);
     const revision = (await this.ctx.sessionPersistence.stat(sessionId))?.revision;
-    let cached = this.cache.get(id);
-    if (cached && ((live && cached.count === live.seq) || (!live && cached.revision === revision))) {
-      cached.revision = revision;
-      return { header: cached.header, events: [...cached.events], lastActivityAt: cached.lastActivityAt };
+    const cached = this.cache.get(id);
+    if (cached && cached.revision === revision) {
+      return this.exportLog(cached);
     }
     const log = await this.inspect(id);
-    cached = {
-      header: log.header,
-      count: log.events.length,
+    return this.exportLog(this.rememberLog(id, log.header, log.events, revision));
+  }
+
+  /** Serve a live session from memory, projecting only events the cache has not seen. */
+  private readLive(id: string, live: Session): SessionLog {
+    const cached = this.cache.get(id);
+    if (cached && cached.count === live.seq) return this.exportLog(cached);
+    if (cached && cached.count < live.seq && cached.header.id === live.header.id) {
+      const appended = live
+        .snapshotEvents(cached.count)
+        .map((event) => this.project(event))
+        .filter((event): event is SessionEvent => !!event);
+      cached.events.push(...appended);
+      cached.count = live.seq;
+      if (appended.length) cached.lastActivityAt = new Date(appended.at(-1)!.time).toISOString();
+      return this.exportLog(cached);
+    }
+    return this.exportLog(this.rememberLog(id, live.header, live.snapshotEvents(), cached?.revision));
+  }
+
+  /** Store one projected log in the cache and return the entry. */
+  private rememberLog(
+    id: string,
+    header: SessionHeader,
+    events: readonly SessionEvent[],
+    revision?: string,
+  ): CachedLog {
+    const entry: CachedLog = {
+      header,
+      count: events.length,
       revision,
-      lastActivityAt: new Date(log.events.at(-1)?.time ?? log.header.createdAt).toISOString(),
-      events: log.events.map((event) => this.project(event)).filter((event): event is SessionEvent => !!event),
+      lastActivityAt: new Date(events.at(-1)?.time ?? header.createdAt).toISOString(),
+      events: events.map((event) => this.project(event)).filter((event): event is SessionEvent => !!event),
     };
-    this.cache.set(id, cached);
-    return { header: cached.header, events: [...cached.events], lastActivityAt: cached.lastActivityAt };
+    this.cache.set(id, entry);
+    return entry;
+  }
+
+  /** Hand out a detached list so callers cannot mutate the cache. */
+  private exportLog(entry: CachedLog): SessionLog {
+    return { header: entry.header, events: [...entry.events], lastActivityAt: entry.lastActivityAt };
   }
 
   async inspect(id: string): Promise<SessionLog> {
