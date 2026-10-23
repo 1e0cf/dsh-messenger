@@ -142,7 +142,9 @@ export interface Host {
   catalog(): Promise<Peer[]>;
   peer(id: string): Promise<Peer>;
   read(id: string): Promise<SessionLog>;
-  append(id: string, type: string, data: unknown): Promise<unknown>;
+  append(id: string, type: string, data: unknown, kind?: 'payload' | 'bookkeeping'): Promise<unknown>;
+  /** Set by Messenger: receives every projected session event for incremental state. */
+  eventSink?: (sessionId: string, event: SessionLog['events'][number]) => void;
   steer(id: string, message: MessengerMessage): void | Promise<void>;
   report(error: unknown): void;
   create(preset: string, title?: string): Promise<Peer>;

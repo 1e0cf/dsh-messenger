@@ -57,6 +57,21 @@ export class Messenger<H extends Host = Host> {
     this.delivery = Promise.resolve();
     this.draining = undefined;
     this.disposed = false;
+    // Channel membership is written by the participants themselves, so every
+    // definition arrives as an ordinary session event: no rebuild on agent creation.
+    host.eventSink = (sessionId, event) => this.observeChannelEvent(sessionId, event);
+  }
+
+  /** Fold one channel definition event into the in-memory channel map. */
+  private observeChannelEvent(sessionId: string, event: SessionLog['events'][number]): void {
+    if (event.type !== 'messenger/channel_created' && event.type !== 'messenger/channel_joined') return;
+    const data = event.data as ChannelDefinition | undefined;
+    if (!data || typeof data.channelId !== 'string') return;
+    if (!Array.isArray(data.participants) || !data.participants.includes(sessionId)) return;
+    if (event.type === 'messenger/channel_created' && data.createdBy !== sessionId) return;
+    const existing = this.channels.get(data.channelId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(data)) return;
+    this.channels.set(data.channelId, structuredClone(data));
   }
 
   lock<T>(task: () => Promise<T>): Promise<T> {
@@ -279,7 +294,7 @@ export class Messenger<H extends Host = Host> {
       messageId: message.messageId,
       recipientSessionId: id,
       deliveredAt: new Date().toISOString(),
-    });
+    }, 'bookkeeping');
   }
 
   async read(callerId: string, channelId: string, query = ''): Promise<ReadMessage[]> {

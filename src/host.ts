@@ -75,6 +75,8 @@ export class DshHost implements Host {
   catalogReady: Promise<unknown>;
   catalogPending?: Promise<Peer[]>;
   private readonly readQueue = new Map<string, Promise<void>>();
+  /** Receives every projected session event; used for incremental channel state. */
+  eventSink?: (sessionId: string, event: SessionEvent) => void;
 
   constructor(ctx: Context, config: MessengerConfig) {
     const probe = Session.create(SessionId(`messenger-patch-probe-${randomUUID()}`));
@@ -90,6 +92,10 @@ export class DshHost implements Host {
     this.catalogCache = new CatalogCache(config.catalogCacheDir);
     this.catalogReady = this.catalogCache.load().catch((error) => this.report(error));
     ctx.on('session/event', (session, event) => {
+      const projected = this.project(event);
+      // Publishers get every event as it lands, so channel state is maintained
+      // incrementally instead of being rebuilt from every stored log.
+      if (projected) this.eventSink?.(session.id, projected);
       const cached = this.cache.get(session.id);
       if (!cached) return;
       if (event.seq !== cached.count) {
@@ -98,7 +104,6 @@ export class DshHost implements Host {
       }
       cached.count++;
       cached.lastActivityAt = new Date(event.time).toISOString();
-      const projected = this.project(event);
       if (projected) cached.events.push(projected);
     });
   }
@@ -358,7 +363,16 @@ export class DshHost implements Host {
     return this.peer(id);
   }
 
-  async append(id: string, type: string, data: unknown): Promise<unknown> {
+  /**
+   * Append one messenger record.
+   *
+   * `bookkeeping` records (receipts, timings, delivery status) are diagnostics: for a
+   * session that is not live they are dropped instead of waking an agent just to write
+   * a status line into its log. Payload records (messages, channel membership) always
+   * land, because they are the channel state itself.
+   */
+  async append(id: string, type: string, data: unknown, kind: 'payload' | 'bookkeeping' = 'payload'): Promise<unknown> {
+    if (kind === 'bookkeeping' && !this.ctx.sessions.get(SessionId(id))) return undefined;
     const agent = await this.ensure(id);
     const recordType = type.startsWith(PLUGIN_PREFIX) ? type : `${PLUGIN_PREFIX}${type}`;
     const seq = appendPluginRecord(agent.session, recordType, data);
@@ -449,7 +463,7 @@ export class DshHost implements Host {
         messageId: receipt.messageId,
         recipientSessionId: sessionId,
         readAt: new Date().toISOString(),
-      });
+      }, 'bookkeeping');
     }
   }
 

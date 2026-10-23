@@ -53,13 +53,15 @@ export async function start(ctx: Context, config: MessengerConfig): Promise<Mess
     await host.close();
   });
   ctx.on('agent/created', () => {
-    // Session events cannot be appended reentrantly during their publication.
-    queueMicrotask(() =>
-      messenger
-        .restore()
-        .then(() => messenger.kick())
-        .catch((error) => host.report(error)),
-    );
+    // Channel state arrives as session events and is folded in by the host hook, so a
+    // new agent only needs a delivery sweep - not a rebuild of every stored channel.
+    queueMicrotask(() => {
+      try {
+        messenger.kick();
+      } catch (error) {
+        host.report(error);
+      }
+    });
   });
   ctx.on('llm/stream', async function* (request, next) {
     let marked = false;

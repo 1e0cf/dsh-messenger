@@ -138,6 +138,7 @@ function makeWorld({ coldSessions = 115, withChannels = 40, liveFiller = 1200, m
       resume: async (options) => {
         counts.resume += 1;
         const id = String(options?.resumeSessionId ?? A);
+        if (sessions.has(id)) live.set(id, sessions.get(id));
         return { agent: agentFor(id), dispose: async () => {} };
       },
       create: async (options) => {
@@ -229,6 +230,26 @@ await withWorld({ messages: 1 }, async ({ host, messenger, counts }) => {
   await messenger.send(A, CHANNEL, 'hello');
   await messenger.settle();
   record('send+drain', counts, Date.now() - started);
+  await host.close();
+});
+
+
+// 5. Five agent creations: the old wiring rebuilt every channel each time.
+await withWorld({}, async ({ host, messenger, counts }) => {
+  await messenger.restore();
+  reset(counts);
+  const started = Date.now();
+  for (let i = 0; i < 5; i++) {
+    await messenger.restore();
+    messenger.kick();
+    await messenger.settle();
+  }
+  record('agent-created-x5-old-hook', counts, Date.now() - started);
+  reset(counts);
+  const kickStarted = Date.now();
+  for (let i = 0; i < 5; i++) messenger.kick();
+  await messenger.settle();
+  record('agent-created-x5-new-hook', counts, Date.now() - kickStarted);
   await host.close();
 });
 
