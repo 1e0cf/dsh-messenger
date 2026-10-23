@@ -41,7 +41,7 @@ export class Messenger<H extends Host = Host> {
   config: MessengerConfig;
   channels: Map<string, ChannelDefinition>;
   errors: Map<string, string>;
-  serial: Promise<unknown>;
+  locks: Map<string, Promise<unknown>>;
   delivery: Promise<unknown>;
   draining?: Promise<void>;
   redrain?: boolean;
@@ -56,7 +56,7 @@ export class Messenger<H extends Host = Host> {
     this.config = config;
     this.channels = new Map();
     this.errors = new Map();
-    this.serial = Promise.resolve();
+    this.locks = new Map<string, Promise<unknown>>();
     // Delivery sweeps get their own chain: a slow drain must never queue a send.
     this.delivery = Promise.resolve();
     this.draining = undefined;
@@ -91,14 +91,23 @@ export class Messenger<H extends Host = Host> {
     this.dirty.add(data.channelId);
   }
 
-  lock<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.serial.then(task);
-    this.serial = result.catch(() => {});
+  /**
+   * Serialize work on one key. Sends to different channels must not wait for each
+   * other: the single global chain made every send queue behind the slowest one.
+   */
+  lock<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(key) ?? Promise.resolve();
+    const result = previous.then(task);
+    const guarded = result.catch(() => {});
+    this.locks.set(key, guarded);
+    void guarded.finally(() => {
+      if (this.locks.get(key) === guarded) this.locks.delete(key);
+    });
     return result;
   }
 
   async restore(): Promise<void> {
-    return this.lock(async () => {
+    return this.lock('global', async () => {
       const logs: SessionLog[] = [];
       // Only sessions known to lack messenger records can be skipped: reading
       // the rest is a full-history pass for nothing. An unknown flag still reads.
@@ -133,7 +142,7 @@ export class Messenger<H extends Host = Host> {
   }
 
   async create(callerId: string, targetId: string): Promise<ChannelDefinition> {
-    return this.lock(async () => {
+    return this.lock('global', async () => {
       if (callerId === targetId) throw new Error('A channel requires two different sessions');
       await this.requirePair(callerId, targetId);
       const channel: ChannelDefinition = {
@@ -177,7 +186,7 @@ export class Messenger<H extends Host = Host> {
   async send(callerId: string, channelId: string, text: string, messageId: string = randomUUID()): Promise<SendResult> {
     const startedAt = Date.now();
     let lockedAt = startedAt;
-    const result = await this.lock(async () => {
+    const result = await this.lock(channelId, async () => {
       lockedAt = Date.now();
       const channel = this.channel(callerId, channelId);
       if (typeof text !== 'string' || !text.trim()) throw new Error('Message text is empty');
@@ -254,7 +263,7 @@ export class Messenger<H extends Host = Host> {
 
   async settle(): Promise<void> {
     do {
-      await this.serial;
+      await Promise.all([...this.locks.values()]);
       await this.delivery;
       await this.draining;
     } while (this.draining || this.redrain);

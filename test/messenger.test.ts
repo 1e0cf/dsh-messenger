@@ -172,3 +172,26 @@ test('several queued sends are drained even while delivery is already running', 
     Array.from({ length: 8 }, (_, i) => `message ${i}`),
   );
 });
+
+test('sends to different channels do not queue behind each other', async () => {
+  const host = new MemoryHost();
+  const messenger = new Messenger(host, config);
+  const first = await messenger.create('a', 'b');
+  const second = await messenger.create('a', 'c');
+  const append = host.append.bind(host);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Hold the first channel's send inside its lock, then prove the other channel proceeds.
+  host.append = async (id: string, type: string, data: unknown) => {
+    if (type === 'messenger/message' && (data as { channelId?: string }).channelId === first.channelId) await blocked;
+    return append(id, type, data);
+  };
+  const firstSend = messenger.send('a', first.channelId, 'slow');
+  const secondSend = messenger.send('a', second.channelId, 'fast');
+  await secondSend;
+  release();
+  await firstSend;
+  assert.ok(host.logs.get('a')!.events.some((event) => (event.data as { text?: string }).text === 'fast'));
+});
