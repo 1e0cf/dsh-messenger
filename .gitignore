@@ -2,3 +2,4 @@ node_modules
 .smoke/
 *.bak-*
 *.before-*
+lib

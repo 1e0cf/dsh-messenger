@@ -3,13 +3,25 @@
   "version": "0.1.0",
   "description": "Session-backed channels between independent DeepSeek Harness agents",
   "type": "module",
-  "main": "src/index.js",
-  "exports": { ".": "./src/index.js", "./core": "./src/messenger.js" },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./core": {
+      "default": "./lib/messenger.js"
+    }
+  },
   "license": "MIT",
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "check": "node --check src/index.js && node --check src/messenger.js && node --check src/host.js && node --check src/tools.js && node --check src/projection.js && node --check src/discovery.js && node --check src/legacy-tools.js",
-    "smoke": "node scripts/restart-smoke.mjs"
+    "build": "bun build src/index.ts src/messenger.ts --outdir lib --target node --format esm --packages external",
+    "test": "bun test",
+    "typecheck": "bun check --no-script",
+    "format": "bun fmt .",
+    "lint": "bun lint",
+    "gate": "bun fmt --check . && bun lint && bun check --no-script && bun test",
+    "fix": "bun fmt . && bun lint --fix",
+    "smoke": "bun scripts/restart-smoke.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
@@ -18,5 +30,12 @@
     "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
   },
-  "files": ["src", "README.md", "LICENSE"]
+  "devDependencies": {
+    "@types/node": "^26.6.5"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ]
 }

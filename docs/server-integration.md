@@ -4,16 +4,19 @@ Read when changing the deployed multiagent profile or its systemd service.
 
 The server uses one DSH process under `dsh-telegram.service`, with profile
 `~/.dsh/profiles/multiagent`. Its CLI comes from the isolated patched runtime
-`~/Projects/dsh-messenger-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js`.
+`~/Projects/dsh-messenger-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js`. The
+messenger plugin is loaded from the built entry
+`~/Projects/dsh-messenger/lib/index.js`; rebuild it there (`bun install && bun
+run build`) before restarting, because `src/index.ts` is not a runtime entry.
 The former `telegram` profile and the previous systemd unit backup remain
 available. Session and workspace storage stays under the same DSH home.
 
 The profile declares two presets:
 
-| Preset ID | Display name | Capabilities |
-| --- | --- | --- |
-| `nix-assistant` | Nix Assistant | Telegram conversation, messenger channels, preset discovery/creation |
-| `nix-orchestrator` | Nix Orchestrator | Messenger communication; session diagnostics disabled |
+| Preset ID          | Display name     | Capabilities                                                         |
+| ------------------ | ---------------- | -------------------------------------------------------------------- |
+| `nix-assistant`    | Nix Assistant    | Telegram conversation, messenger channels, preset discovery/creation |
+| `nix-orchestrator` | Nix Orchestrator | Messenger communication; session diagnostics disabled                |
 
 The assistant's ID is `nix-assistant`. Existing persisted `standard` preset
 references were migrated with backups under DSH home; session IDs, messages and
@@ -43,4 +46,4 @@ A one-time host plugin verified both deployed presets, native tool availability,
 creation of an independent orchestrator root, and creation of a shared channel.
 Its result is `/tmp/dsh-multiagent-health.json`. The verifier is disabled after
 the check and makes no model API calls. Runtime transport/restart tests use
-`scripts/restart-smoke.mjs` with a deterministic mock adapter.
+`scripts/restart-smoke.ts` with a deterministic mock adapter.

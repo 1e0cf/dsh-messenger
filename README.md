@@ -8,6 +8,10 @@ Prototype for DSH `0.2.0-rc.2`. Requires the Session `ignorable: true` patch in 
 companion `deepseek-harness-messenger` fork. Plugin startup probes the API and
 refuses an unpatched runtime before writing anything to real sessions.
 
+Sources are TypeScript and the plugin is consumed as built ESM from `lib/`.
+Development tooling uses the Bun canary line: `bun fmt`, `bun lint`, and
+`bun check` are canary-only, so run `bun upgrade --canary` before the gate.
+
 ## Runtime and installation
 
 Use one DSH process with the standard `agents`, `sessions`, `sessionPersistence`,
@@ -16,10 +20,16 @@ Use one DSH process with the standard `agents`, `sessions`, `sessionPersistence`
 a second copy of the Session package only for this plugin is insufficient.
 
 Clone this repository alongside the patched runtime. Resolve peer dependencies
-from that runtime, then add a Cordis entry pointing to `src/index.js`. For example:
+from that runtime, then build the plugin and add a Cordis entry pointing to the
+built `lib/index.js`. For example:
+
+```sh
+bun install
+bun run build
+```
 
 ```yaml
-- name: file:///home/nikita/Projects/dsh-messenger/src/index.js
+- name: file:///home/nikita/Projects/dsh-messenger/lib/index.js
   config:
     allow:
       - from: preset:nix-assistant
@@ -73,15 +83,15 @@ the first sent message does. Do not send stop messages to unused empty sessions.
 
 Five tools are exposed. Search and private-session diagnostics are disabled for
 all agents, including supervisors. Their implementation remains in
-`src/legacy-tools.js` and the core; the active plugin does not register them.
+`src/legacy-tools.ts` and the core; the active plugin does not register them.
 
-| Tool | Parameters and result |
-| --- | --- |
-| `messenger_discover_agents` | No arguments. Allowed agents by name, ID and description, `can_create_session`, `can_open_channel`, and up to five recent permitted sessions |
-| `messenger_channels_new` | Exactly one of `target_session_id` or `preset`, plus optional `title`. Creates a channel, creating an independent peer when a preset name is supplied |
-| `messenger_channels_list` | No arguments. Only the caller's channels, with peer session IDs, preset names, status, session titles, and ISO last activity |
-| `messenger_channel_read` | `channel_id`. Shared messages with sender, ISO time and delivery/read receipts |
-| `messenger_send_message` | `channel_id`, `text`. Generates and returns `message_id`, `channel_id`, and `status: queued` |
+| Tool                        | Parameters and result                                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `messenger_discover_agents` | No arguments. Allowed agents by name, ID and description, `can_create_session`, `can_open_channel`, and up to five recent permitted sessions          |
+| `messenger_channels_new`    | Exactly one of `target_session_id` or `preset`, plus optional `title`. Creates a channel, creating an independent peer when a preset name is supplied |
+| `messenger_channels_list`   | No arguments. Only the caller's channels, with peer session IDs, preset names, status, session titles, and ISO last activity                          |
+| `messenger_channel_read`    | `channel_id`. Shared messages with sender, ISO time and delivery/read receipts                                                                        |
+| `messenger_send_message`    | `channel_id`, `text`. Generates and returns `message_id`, `channel_id`, and `status: queued`                                                          |
 
 Use the exact preset name from discovery, not an internal preset ID.
 Denied agents and presets absent from the registry do not appear. Communication
@@ -116,13 +126,13 @@ messages keep the standard DSH format and are outside this plugin.
 All persistent records use the participants' standard Session JSONL files. No
 channel log, side database, or persistent queue is created.
 
-| Event | Written in |
-| --- | --- |
-| `messenger/channel_created` | Initiator session |
-| `messenger/channel_joined` | Other member session |
-| `messenger/message` | Sender outbox first; recipient session before native delivery |
-| `messenger/message_delivered` | Recipient after native inbox acceptance and flush |
-| `messenger/message_read` | Recipient on the first response chunk from a model request containing the message |
+| Event                         | Written in                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `messenger/channel_created`   | Initiator session                                                                 |
+| `messenger/channel_joined`    | Other member session                                                              |
+| `messenger/message`           | Sender outbox first; recipient session before native delivery                     |
+| `messenger/message_delivered` | Recipient after native inbox acceptance and flush                                 |
+| `messenger/message_read`      | Recipient on the first response chunk from a model request containing the message |
 
 All records carry `ignorable: true` and payload `version: 1`. Other readers can
 skip these plugin events while still reading native events. `channel_created`
@@ -162,8 +172,10 @@ There are no rate limits, automatic loop prevention, or implicit routing.
 ## Verification
 
 ```sh
-node --test test/*.test.js
-node scripts/restart-smoke.mjs
+bun install
+bun run gate                 # fmt check, lint, type check, tests
+bun run build                # lib/index.js and lib/messenger.js
+bun scripts/restart-smoke.ts # needs the patched runtime
 ```
 
 The smoke test needs the complete patched DSH runtime. It uses real Cordis,

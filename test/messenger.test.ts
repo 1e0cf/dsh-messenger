@@ -1,42 +1,77 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { Messenger } from '../src/messenger.js';
+import { test } from 'bun:test';
+import { Messenger } from '../src/messenger.ts';
+import type { Host, MessengerConfig, MessengerMessage, Peer, SessionLog, SessionLogEvent } from '../src/types.ts';
 
-class MemoryHost {
+class MemoryHost implements Host {
+  logs: Map<string, SessionLog>;
+  steers: { id: string; message: MessengerMessage }[];
+  failBeforeSteer: boolean;
+  errors: string[];
+
   constructor() {
-    this.logs = new Map(['a', 'b', 'c'].map(id => [id, {
-      header: { id, agentPreset: id === 'a' ? 'assistant' : 'orchestrator' }, events: [],
-    }]));
+    this.logs = new Map(
+      ['a', 'b', 'c'].map(
+        (id) =>
+          [
+            id,
+            {
+              header: { id, createdAt: 0, agentPreset: id === 'a' ? 'assistant' : 'orchestrator' },
+              events: [],
+            },
+          ] as const,
+      ),
+    );
     this.steers = [];
     this.failBeforeSteer = false;
     this.errors = [];
   }
-  async catalog() { return Promise.all([...this.logs.keys()].map(id => this.peer(id))); }
-  async peer(id) {
+  async catalog() {
+    return Promise.all([...this.logs.keys()].map((id) => this.peer(id)));
+  }
+  async peer(id: string): Promise<Peer> {
     const log = this.logs.get(id);
     if (!log) throw new Error('Unknown session');
     return { id, preset: log.header.agentPreset, status: 'idle' };
   }
-  async read(id) { return structuredClone(this.logs.get(id)); }
-  async append(id, type, data) {
-    this.logs.get(id).events.push({ type, data: structuredClone(data), ignorable: true });
+  async read(id: string): Promise<SessionLog> {
+    return structuredClone(this.logs.get(id)!);
   }
-  async steer(id, message) {
+  async append(id: string, type: string, data: unknown): Promise<void> {
+    this.logs.get(id)!.events.push({ type, data: structuredClone(data) } as SessionLogEvent);
+  }
+  async steer(id: string, message: MessengerMessage): Promise<void> {
     if (this.failBeforeSteer) throw new Error('Simulated crash before native acceptance');
     this.steers.push({ id, message });
-    this.logs.get(id).events.push({ type: 'agent/inbox/spliced', data: { inserted: [{ id: message.messageId }] } });
+    this.logs
+      .get(id)!
+      .events.push({ type: 'agent/inbox/spliced', data: { inserted: [{ id: message.messageId }] } } as SessionLogEvent);
   }
-  report(error) { this.errors.push(String(error)); }
+  async create(preset: string, title?: string): Promise<Peer> {
+    const peer: Peer = { id: 'created', preset, ...(title === undefined ? {} : { title }) };
+    this.logs.set(peer.id, { header: { id: peer.id, createdAt: 0, agentPreset: preset }, events: [] });
+    return peer;
+  }
+  async presets() {
+    return [];
+  }
+  report(error: unknown): void {
+    this.errors.push(String(error));
+  }
 }
-const config = {
-  allow: [{ from: 'preset:assistant', to: 'preset:orchestrator' }, { from: 'preset:orchestrator', to: 'preset:assistant' }],
-  supervisors: ['preset:orchestrator'], peers: {},
+const config: MessengerConfig = {
+  allow: [
+    { from: 'preset:assistant', to: 'preset:orchestrator' },
+    { from: 'preset:orchestrator', to: 'preset:assistant' },
+  ],
+  supervisors: ['preset:orchestrator'],
+  peers: {},
 };
 
 test('send queues durably and steers without awaiting a model answer', async () => {
   const host = new MemoryHost();
   const messenger = new Messenger(host, config);
-  const channel = await messenger.create('a', 'b', 'research');
+  const channel = await messenger.create('a', 'b');
   const sent = await messenger.send('a', channel.channelId, 'Investigate this project', 'm1');
   assert.equal(sent.status, 'queued');
   await messenger.settle();
@@ -54,7 +89,7 @@ test('restart recovers a recipient record without native inbox acceptance', asyn
   await original.send('a', channel.channelId, 'hello', 'm1');
   await original.settle();
   assert.equal((await original.read('a', channel.channelId))[0].recipients[0].status, 'queued');
-  assert.equal(host.logs.get('b').events.filter(event => event.type === 'messenger/message').length, 1);
+  assert.equal(host.logs.get('b')!.events.filter((event) => event.type === 'messenger/message').length, 1);
   await original.close();
   host.failBeforeSteer = false;
   const restored = new Messenger(host, config);
@@ -62,7 +97,7 @@ test('restart recovers a recipient record without native inbox acceptance', asyn
   restored.kick();
   await restored.settle();
   assert.equal(host.steers.length, 1);
-  assert.equal(host.logs.get('b').events.filter(event => event.type === 'messenger/message').length, 1);
+  assert.equal(host.logs.get('b')!.events.filter((event) => event.type === 'messenger/message').length, 1);
 });
 
 test('retry and restart do not steer an already accepted message twice', async () => {
@@ -101,7 +136,10 @@ test('deny-by-default applies to creation, discovery, and send after policy chan
   const host = new MemoryHost();
   const messenger = new Messenger(host, { ...config, allow: [] });
   await assert.rejects(messenger.create('a', 'b'), /denies/);
-  assert.deepEqual((await messenger.sessions('a')).map(peer => peer.id), ['a']);
+  assert.deepEqual(
+    (await messenger.sessions('a')).map((peer) => peer.id),
+    ['a'],
+  );
   messenger.config = config;
   const channel = await messenger.create('a', 'b');
   messenger.config = { ...config, allow: [] };
@@ -112,7 +150,7 @@ test('one surviving session log reconstructs the complete channel definition', a
   const host = new MemoryHost();
   const messenger = new Messenger(host, config);
   const channel = await messenger.create('a', 'b');
-  host.logs.get('a').events = [];
+  host.logs.get('a')!.events = [];
   const restored = new Messenger(host, config);
   await restored.restore();
   assert.deepEqual(restored.channels.get(channel.channelId), channel);
@@ -123,9 +161,14 @@ test('several queued sends are drained even while delivery is already running', 
   const host = new MemoryHost();
   const messenger = new Messenger(host, config);
   const channel = await messenger.create('a', 'b');
-  await Promise.all(Array.from({ length: 8 }, (_, i) => messenger.send('a', channel.channelId, `message ${i}`, `m${i}`)));
+  await Promise.all(
+    Array.from({ length: 8 }, (_, i) => messenger.send('a', channel.channelId, `message ${i}`, `m${i}`)),
+  );
   await messenger.settle();
   assert.equal(host.steers.length, 8);
-  assert.equal(new Set(host.steers.map(row => row.message.messageId)).size, 8);
-  assert.deepEqual(host.steers.map(row => row.message.text), Array.from({ length: 8 }, (_, i) => `message ${i}`));
+  assert.equal(new Set(host.steers.map((row) => row.message.messageId)).size, 8);
+  assert.deepEqual(
+    host.steers.map((row) => row.message.text),
+    Array.from({ length: 8 }, (_, i) => `message ${i}`),
+  );
 });

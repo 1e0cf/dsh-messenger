@@ -5,7 +5,15 @@ import { join, resolve } from 'node:path';
 
 const VERSION = 1;
 
-function dshHome() {
+export interface CatalogEntry {
+  size?: number;
+  preset?: string;
+  title?: string;
+  lastActivityAt?: string;
+  hasChannels?: boolean;
+}
+
+function dshHome(): string {
   const configured = process.env.DSH_HOME || join(homedir(), '.dsh');
   if (configured === '~') return homedir();
   if (configured.startsWith('~/')) return join(homedir(), configured.slice(2));
@@ -24,44 +32,59 @@ function dshHome() {
  * every restart, invalidating every entry at once.
  */
 export class CatalogCache {
-  constructor(directory) {
+  directory: string;
+  entries: Map<string, CatalogEntry>;
+  dirty: boolean;
+  writing: Promise<void>;
+
+  constructor(directory?: string) {
     this.directory = directory ?? join(dshHome(), 'messenger-catalog');
     this.entries = new Map();
     this.dirty = false;
     this.writing = Promise.resolve();
   }
 
-  async load() {
+  async load(): Promise<Map<string, CatalogEntry>> {
     try {
-      const data = JSON.parse(await readFile(join(this.directory, 'catalog.json'), 'utf8'));
+      const data = JSON.parse(await readFile(join(this.directory, 'catalog.json'), 'utf8')) as {
+        version?: unknown;
+        sessions?: Record<string, CatalogEntry> | null;
+      };
       if (data.version !== VERSION || typeof data.sessions !== 'object' || data.sessions === null) return this.entries;
       for (const [id, entry] of Object.entries(data.sessions)) {
         if (typeof entry?.size !== 'number' || typeof entry.title !== 'string') continue;
         this.entries.set(id, entry);
       }
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     return this.entries;
   }
 
-  get(id) { return this.entries.get(id); }
+  get(id: string): CatalogEntry | undefined {
+    return this.entries.get(id);
+  }
 
-  set(id, entry) {
+  set(id: string, entry: CatalogEntry): void {
     this.entries.set(id, entry);
     this.dirty = true;
   }
 
   /** Persist only when something changed; concurrent callers share one write. */
-  flush() {
+  flush(): Promise<void> {
     if (!this.dirty) return this.writing;
     this.dirty = false;
-    this.writing = this.writing.catch(() => {}).then(async () => {
-      const snapshot = JSON.stringify({ version: VERSION, sessions: Object.fromEntries(this.entries) });
-      await mkdir(this.directory, { recursive: true, mode: 0o700 });
-      const target = join(this.directory, 'catalog.json');
-      const temp = `${target}.${randomUUID()}.tmp`;
-      await writeFile(temp, snapshot, { mode: 0o600 });
-      await rename(temp, target);
-    }).catch(() => {});
+    this.writing = this.writing
+      .catch(() => {})
+      .then(async () => {
+        const snapshot = JSON.stringify({ version: VERSION, sessions: Object.fromEntries(this.entries) });
+        await mkdir(this.directory, { recursive: true, mode: 0o700 });
+        const target = join(this.directory, 'catalog.json');
+        const temp = `${target}.${randomUUID()}.tmp`;
+        await writeFile(temp, snapshot, { mode: 0o600 });
+        await rename(temp, target);
+      })
+      .catch(() => {});
     return this.writing;
   }
 }
