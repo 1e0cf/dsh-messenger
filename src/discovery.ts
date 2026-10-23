@@ -46,7 +46,8 @@ export async function discoverAgents(messenger: Messenger, callerId: string): Pr
         agent_preset: preset.id,
         description: preset.description ?? '',
         can_create_session: Boolean(!preset.broken && messenger.config.peers[preset.id] && allowedPreset),
-        can_open_channel: permitted.length > 0 || allowedPreset,
+        can_open_channel:
+          !preset.broken && Boolean(messenger.config.peers[preset.id]) && (permitted.length > 0 || allowedPreset),
         sessions: permitted
           .sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '') || a.id.localeCompare(b.id))
           .slice(0, 5)
