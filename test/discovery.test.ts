@@ -86,13 +86,15 @@ test('discovery exposes only creatable preset names and five latest permitted se
     /only to a newly created session/,
   );
   await assert.rejects(newChannel(messenger, 'a', { preset: 'Nix Orchestrator', title: '  ' }), /visible characters/);
-  const listed = (await listChannels(messenger, 'a')) as unknown as {
-    channel_id: string;
-    sessions: { session_id: string; title: string }[];
-  }[];
+  const listed = await listChannels(messenger, 'a');
   assert.equal(listed[0].channel_id, created.channel_id);
-  assert.equal(listed[0].sessions[0].session_id, 'new');
-  assert.equal(listed[0].sessions[0].title, 'Research');
+  assert.deepEqual(
+    listed[0].agents_participants.map((participant) => [participant.session_id, participant.title]),
+    [
+      ['a', ''],
+      ['new', 'Research'],
+    ],
+  );
   assert.equal('title' in listed[0], false);
   assert.deepEqual(await listChannels(messenger, 'b0'), []);
 });
