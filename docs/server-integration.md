@@ -5,9 +5,22 @@ Read when changing the deployed multiagent profile or its systemd service.
 The server uses one DSH process under `dsh-telegram.service`, with profile
 `~/.dsh/profiles/multiagent`. Its CLI comes from the isolated patched runtime
 `~/Projects/dsh-messenger-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js`. The
-messenger plugin is loaded from the built entry
-`~/Projects/dsh-messenger/lib/index.js`; rebuild it there (`bun install && bun
-run build`) before restarting, because `src/index.ts` is not a runtime entry.
+messenger plugin is deployed as a package inside the profile:
+`~/.dsh/profiles/multiagent/node_modules/dsh-messenger/` (package.json, lib, README,
+LICENSE) and referenced from `cordis.patch.yml` by the bare name `dsh-messenger`, so its
+`@deepseek-ai/*` imports resolve through the profile's node_modules and share the
+runtime's class identities. There is no source checkout on the server. Deploy a build
+from the development checkout:
+
+```sh
+bun run build
+rsync -a package.json README.md LICENSE lib/ \
+  localserver:.dsh/profiles/multiagent/node_modules/dsh-messenger/
+ssh localserver 'systemctl --user restart dsh-telegram.service'
+```
+
+`src/index.ts` is not a runtime entry. A profile reinstall may prune that directory;
+re-run the deploy step if the plugin ever disappears from the profile.
 The former `telegram` profile and the previous systemd unit backup remain
 available. Session and workspace storage stays under the same DSH home.
 
