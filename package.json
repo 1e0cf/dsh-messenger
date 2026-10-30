@@ -11,15 +11,15 @@
   },
   "license": "MIT",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json --noCheck",
     "test": "bun test",
-    "typecheck": "bun check --no-script",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "format": "bun fmt .",
     "lint": "bun lint",
     "gate": "bun fmt --check . && bun lint && bun check --no-script && bun test",
     "fix": "bun fmt . && bun lint --fix",
     "smoke": "bun scripts/restart-smoke.ts",
-    "prepare": "tsc -p tsconfig.build.json"
+    "prepare": "tsc -p tsconfig.build.json --noCheck"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
